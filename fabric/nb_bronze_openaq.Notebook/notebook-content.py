@@ -88,8 +88,7 @@ def to_float(value):
 
 
 
-#note: `x.get("field") or {}` means "if the field is missing or empty, use an empty
-# dictionary", so the next .get() does not fail.
+#high level note!!: `x.get("field") or {}` means "if the field is missing or empty, use an empty dictionary", so the next .get() does not fail.
 
 #download all monitoring locations inside the New York City box.
 locations = fetch_all("/locations", {"bbox": NYC_BBOX})

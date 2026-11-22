@@ -7,14 +7,14 @@
   "queryGroups": [],
   "documentLocale": "en-GB",
   "queriesMetadata": {
-    "df_ecb_fx_raw": {
+    "ecb_fx_raw": {
       "queryId": "3d783c1a-9be8-49a2-8c2c-03841243db82",
-      "queryName": "df_ecb_fx_raw",
+      "queryName": "ecb_fx_raw",
       "loadEnabled": false
     },
-    "df_ecb_fx_raw_DataDestination": {
-      "queryId": "10ddd5a3-7c66-4b5f-9202-6a6f0e946fd6",
-      "queryName": "df_ecb_fx_raw_DataDestination",
+    "ecb_fx_raw_DataDestination": {
+      "queryId": "0394c06a-a956-4981-acfc-342477e60b18",
+      "queryName": "ecb_fx_raw_DataDestination",
       "isHidden": true,
       "loadEnabled": false
     }

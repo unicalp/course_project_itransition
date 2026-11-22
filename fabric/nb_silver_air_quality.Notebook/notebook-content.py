@@ -38,6 +38,19 @@ SILVER_TABLES = (
     + "/Tables/dbo"
 )
 
+# ===== Cell 2: Helper functions =====
+
+def save_silver_table(df, table_name):
+    """Save a DataFrame as a Delta table in the Silver lakehouse. An old version is replaced."""
+    table_path = SILVER_TABLES + "/" + table_name
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(table_path)
+    print(table_name, "saved")
+
+
+def read_silver_table(table_name):
+    """Read a Delta table back from the Silver lakehouse."""
+    return spark.read.format("delta").load(SILVER_TABLES + "/" + table_name)
+
 # Step 3: quality limits.
 MAX_PM25 = 1000              # in µg/m³. A higher hourly value is treated as a sensor error.
 MAX_NO2_PPB = 1000           # in ppb. Same idea for NO2.

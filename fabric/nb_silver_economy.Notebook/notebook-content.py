@@ -22,12 +22,12 @@
 
 # CELL ********************
 
-#Cell 1:settings
-#Everything we may want to change later is here, in one place.
+#settings
+#Everything we may want to change later is here, in one place
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 
-#step 1: the raw tables (Bronze = the default lakehouse of this notebook).
+#step 1: the raw tables (Bronze = the default lakehouse of this notebook)
 BRONZE_FX_TABLE = "ecb_fx_raw"
 BRONZE_GDP_TABLE = "worldbank_gdp_raw"
 
@@ -39,13 +39,24 @@ SILVER_TABLES = (
     + "/Tables/dbo"
 )
 
-#step 3: the calendar covers these days. Change the dates to add more years.
+#step 3: the calendar covers these days. (Change the dates to add more years)
 CALENDAR_START = "2026-01-01"
 CALENDAR_END = "2026-12-31"
 
 spark.conf.set("spark.sql.session.timeZone", "UTC")
 
-#Cell 2: Helper functions
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#Helper functions
 
 def save_silver_table(df, table_name):
     """Save a DataFrame as a Delta table in the Silver lakehouse. An old version is replaced."""
@@ -58,7 +69,16 @@ def read_silver_table(table_name):
     """Read a Delta table back from the Silver lakehouse."""
     return spark.read.format("delta").load(SILVER_TABLES + "/" + table_name)
 
-#Cell 3: Calendar (one row per day)
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#Calendar (one row per day)
 
 # Step 1: make one row for every day between the start date and the end date.
 calendar = spark.sql(f"""
@@ -79,7 +99,17 @@ calendar = calendar.select(
 )
 save_silver_table(calendar, "calendar")
 
-# ===== Cell 4: Daily exchange rate (US dollars for 1 euro) =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+
+#Daily exchange rate (US dollars for 1 euro)
 
 # Step 1: standardize. Real date, real number, clear names. Remove empty and repeated rows.
 rates = spark.table(BRONZE_FX_TABLE).select(
@@ -108,7 +138,16 @@ fx_daily = fx_daily.withColumn("usd_per_eur", F.last("usd_per_eur", ignorenulls=
 fx_daily = fx_daily.withColumn("eur_per_usd", F.round(1 / F.col("usd_per_eur"), 6))
 save_silver_table(fx_daily, "fx_daily")
 
-# ===== Cell 5: Yearly GDP =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Yearly GDP 
 
 # Step 1: standardize. Clear names, the year as a whole number, the value as a number.
 gdp = spark.table(BRONZE_GDP_TABLE).select(

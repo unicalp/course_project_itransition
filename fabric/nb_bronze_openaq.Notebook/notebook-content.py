@@ -88,17 +88,17 @@ def to_float(value):
 
 
 
-#high level note!!: `x.get("field") or {}` means "if the field is missing or empty, use an empty dictionary", so the next .get() does not fail.
+#high level note!!: `x.get("field") or {}` means "if the field is missing or empty, use an empty dictionary",so the next .get() does not fai
 
-#download all monitoring locations inside the New York City box.
+#download all monitoring locations inside the New York City box
 locations = fetch_all("/locations", {"bbox": NYC_BBOX})
 
-#save the raw answer exactly as it came (Bronze = untouched copy).
+#save the raw answer exactly as it came (Bronze = untouched copy)
 os.makedirs(RAW_FOLDER + "/hours", exist_ok=True)
 with open(RAW_FOLDER + "/locations.json", "w") as raw_file:
     json.dump(locations, raw_file)
 
-#build two lists of rows: one for locations, one for the sensors we need.
+#build two lists of rows: one for locations, one for the sensors we need
 location_rows = []
 sensor_rows = []
 
@@ -122,11 +122,11 @@ for location in locations:
         last_seen,
     ))
 
-    #skip locations that stopped sending data before our period starts.
+    #skip locations that stopped sending data before our period starts
     if last_seen is None or last_seen[:10] < DATE_FROM[:10]:
         continue
 
-    #keep only the PM2.5 and NO2 sensors of this location.
+    #keep only the PM2.5 and NO2 sensors of this location
     for sensor in location.get("sensors") or []:
         parameter = sensor.get("parameter") or {}
         if parameter.get("name") in TARGET_PARAMETERS:
@@ -138,7 +138,7 @@ for location in locations:
                 parameter.get("units"),
             ))
 
-#quick check - how many sensors per parameter and unit?
+#check :how many sensors per parameter and unit
 print(len(locations), "locations,", len(sensor_rows), "sensors to download")
 sensor_counts = {}
 for sensor_id, location_id, parameter_id, parameter_name, units in sensor_rows:
@@ -153,7 +153,7 @@ sensor_number = 0
 for sensor_id, location_id, parameter_id, parameter_name, units in sensor_rows:
     sensor_number += 1
 
-    #download all hourly values of this sensor for our period.
+    #download all hourly values of this sensor for our period
     measurements = fetch_all(
         f"/sensors/{sensor_id}/hours",
         {"datetime_from": DATE_FROM, "datetime_to": DATE_TO},
@@ -163,7 +163,7 @@ for sensor_id, location_id, parameter_id, parameter_name, units in sensor_rows:
     with open(f"{RAW_FOLDER}/hours/sensor_{sensor_id}.json", "w") as raw_file:
         json.dump(measurements, raw_file)
 
-    #take the fields we need and add one row per hour.
+    #take the fields we need and add one row per hour
     for measurement in measurements:
         period = measurement.get("period") or {}
         hour_start = period.get("datetimeFrom") or {}
@@ -197,7 +197,7 @@ def save_table(rows, schema, table_name):
     print(table_name, "saved:", len(rows), "rows")
 
 
-#save the three tables. Dates stay as text in Bronze; Silver will convert them.
+#save the three tables. Dates stay as text in Bronze; Silver will convert them
 save_table(
     location_rows,
     "location_id long, name string, locality string, timezone string, provider string, "
@@ -220,7 +220,7 @@ save_table(
     "openaq_hours_raw",
 )
 
-#summary check - do the row counts, dates and values look reasonable?
+#summary = row counts, dates and values 
 spark.sql("""
     SELECT parameter, units,
            COUNT(DISTINCT sensor_id) AS sensors,

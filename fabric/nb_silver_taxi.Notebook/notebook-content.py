@@ -27,17 +27,16 @@ import os
 print(os.listdir("/lakehouse/default/Files"))
 print(os.listdir("/lakehouse/default/Files/raw/nyc_taxi"))
 
-# ===== Cell 1: Settings =====
-# Everything we may want to change later is here, in one place.
+
 import glob
 from pyspark.sql import functions as F
 
-# Step 1: where the raw data is (Bronze = the default lakehouse of this notebook).
+# Step 1: where the raw data is (Bronze = the default lakehouse of this notebook)
 BRONZE_TAXI_FILES = "/lakehouse/default/Files/raw/nyc_taxi/year=*/month=*/*.parquet"
 BRONZE_ZONE_FILE = "Files/raw/nyc_taxi/lookup/taxi_zone_lookup.csv"
 
-# Step 2: where the clean tables go (Silver lakehouse).
-# We ask Fabric for the ids of lh_silver and build the storage address of its dbo tables.
+# Step 2: where the clean tables go (Silver lakehouse)
+# We ask Fabric for the ids of lh_silver and build the storage address of its dbo tables
 silver_lakehouse = notebookutils.lakehouse.get("lh_silver")
 SILVER_TABLES = (
     "abfss://" + silver_lakehouse.workspaceId
@@ -47,15 +46,24 @@ SILVER_TABLES = (
 print(SILVER_TABLES)
 
 
-# Step 3: quality limits. A trip outside these limits is treated as a recording error.
+# Step 3: quality limits. A trip outside these limits is treated as a recording error
 MAX_TRIP_MINUTES = 360                           # 6 hours
 MAX_TRIP_MILES = 100
 
-# Step 4: taxi times are New York local time and have no time zone.
-# With UTC as the session time zone, Spark keeps the clock values exactly as they are.
+# Step 4: taxi times are New York local time and have no time zone
+# With UTC as the session time zone, Spark keeps the clock values exactly as they are
 spark.conf.set("spark.sql.session.timeZone", "UTC")
 
-# ===== Cell 2: Helper functions =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Helper functions
 
 def read_month(local_path):
     """Read ONE monthly taxi file and return it with our standard column names and types."""
@@ -94,7 +102,16 @@ def read_silver_table(table_name):
     """Read a Delta table back from the Silver lakehouse."""
     return spark.read.format("delta").load(SILVER_TABLES + "/" + table_name)
 
-# ===== Cell 3: Read all months and check the quality =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Read all months and check the quality
 
 # Step 1: find all monthly files that Bronze has. A new month is picked up automatically.
 taxi_files = sorted(glob.glob(BRONZE_TAXI_FILES))
@@ -130,7 +147,16 @@ quality_report = checked_trips.groupBy("source_month", "quality_check").agg(F.co
 save_silver_table(quality_report, "taxi_quality_report")
 read_silver_table("taxi_quality_report").orderBy("source_month", "quality_check").show(50, truncate=False)
 
-# ===== Cell 4: Clean, deduplicate, enrich and save =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#Clean, deduplicate, enrich and save
 
 # Step 1: keep only the good rows.
 clean_trips = checked_trips.filter(F.col("quality_check") == "ok").drop("quality_check")
@@ -154,7 +180,16 @@ zones = spark.read.option("header", True).csv(BRONZE_ZONE_FILE).select(
 )
 save_silver_table(zones, "taxi_zones")
 
-# ===== Cell 5: Check the result =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Check the result 
 trips = read_silver_table("taxi_trips")
 zones = read_silver_table("taxi_zones")
 
@@ -174,16 +209,6 @@ unknown_zone_trips = trips.join(zones, trips.pickup_location_id == zones.locatio
 print("Zones:", zones.count(), "| trips with an unknown pickup zone id:", unknown_zone_trips)
 
 
-
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
 
 
 # METADATA ********************

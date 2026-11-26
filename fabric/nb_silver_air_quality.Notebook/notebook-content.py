@@ -22,15 +22,14 @@
 
 # CELL ********************
 
-#Cell 1:settings
-# Everything we may want to change later is here, in one place.
+#settings
 from pyspark.sql import functions as F
 
-# Step 1: the raw tables (Bronze = the default lakehouse of this notebook).
+# Step 1: the raw tables (Bronze = the default lakehouse of this notebook)
 BRONZE_HOURS_TABLE = "openaq_hours_raw"
 BRONZE_LOCATIONS_TABLE = "openaq_locations_raw"
 
-# Step 2: where the clean tables go (Silver lakehouse). Same lines as in the taxi notebook.
+# Step 2: where the clean tables go (Silver lakehouse). Same lines as in the taxi notebook
 silver_lakehouse = notebookutils.lakehouse.get("lh_silver")
 SILVER_TABLES = (
     "abfss://" + silver_lakehouse.workspaceId
@@ -38,7 +37,16 @@ SILVER_TABLES = (
     + "/Tables/dbo"
 )
 
-# ===== Cell 2: Helper functions =====
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#helper functions
 
 def save_silver_table(df, table_name):
     """Save a DataFrame as a Delta table in the Silver lakehouse. An old version is replaced."""
@@ -51,23 +59,32 @@ def read_silver_table(table_name):
     """Read a Delta table back from the Silver lakehouse."""
     return spark.read.format("delta").load(SILVER_TABLES + "/" + table_name)
 
-# Step 3: quality limits.
+# A) quality limits.
 MAX_PM25 = 1000              # in µg/m³. A higher hourly value is treated as a sensor error.
 MAX_NO2_PPB = 1000           # in ppb. Same idea for NO2.
 MIN_COVERAGE_PERCENT = 50    # an hour needs at least half of its expected readings
 MIN_SENSOR_SHARE = 0.5       # a sensor needs good data for at least half of the hours in the period
 
-# Step 4: we work with New York local time, like in the taxi data.
+#B) we work with New York local time, like in the taxi data
 LOCAL_TIMEZONE = "America/New_York"
 spark.conf.set("spark.sql.session.timeZone", "UTC")
 
-#Cell 3: Standardize, normalize the units and check the quality
 
-# Step 1: read the raw hourly values. One sensor can have only one value per hour,
-# so we remove repeated rows first.
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#Standardizatio, normalize the units and check the quality
+
+# Step 1: read the raw hourly values. One sensor can have only one value per hour (so we remove repeated rows first)
 raw_hours = spark.table(BRONZE_HOURS_TABLE).dropDuplicates(["sensor_id", "datetime_from_utc"])
 
-# Step 2: keep the columns we need and turn the text date into a real timestamp.
+# Step 2: keep the columns we need and turn the text date into a real timestamp
 hours = raw_hours.select(
     "sensor_id",
     "location_id",
@@ -78,13 +95,13 @@ hours = raw_hours.select(
     "percent_coverage",
 )
 
-# Step 3: normalize the units. NO2 comes in ppm; we convert it to ppb (1 ppm = 1000 ppb).
+# Step 3: normalize the units. NO2 comes in ppm; we convert it to ppb (1 ppm = 1000 ppb)
 is_ppm = F.col("raw_unit") == "ppm"
 hours = hours.withColumn("value", F.when(is_ppm, F.round(F.col("raw_value") * 1000, 3)).otherwise(F.col("raw_value")))
 hours = hours.withColumn("unit", F.when(is_ppm, "ppb").otherwise(F.col("raw_unit")))
 
-# Step 4: give every row a quality mark: "ok" or the reason why it is bad.
-# The rules are checked from top to bottom; the first rule that matches wins.
+# Step 4: give every row a quality mark: "ok" or the reason why it is bad
+#rules are checked from top to bottom; the first rule that matches wins
 max_value = F.when(F.col("parameter") == "pm25", MAX_PM25).otherwise(MAX_NO2_PPB)
 checked_hours = hours.withColumn(
     "quality_check",
@@ -96,7 +113,7 @@ checked_hours = hours.withColumn(
     .otherwise("ok"),
 )
 
-# Step 5: find the sensors with too little good data and mark their rows as "sparse_sensor".
+# Step 5: find the sensors with too little good data and mark their rows as "sparse_sensor"
 hours_in_period = checked_hours.select("measured_at_utc").dropna().distinct().count()
 min_good_hours = hours_in_period * MIN_SENSOR_SHARE
 print("Hours in the period:", hours_in_period, "| a sensor needs at least", int(min_good_hours), "good hours")
@@ -113,7 +130,7 @@ checked_hours = checked_hours.withColumn(
     .otherwise(F.col("quality_check")),
 )
 
-# Step 6: count the rows and sensors per pollutant and per mark, and keep this report as a table.
+# Step 6: count the rows and sensors per pollutant and per mark, and keep this report as a table
 quality_report = checked_hours.groupBy("parameter", "quality_check").agg(
     F.count("*").alias("row_count"),
     F.countDistinct("sensor_id").alias("sensors"),
@@ -121,7 +138,16 @@ quality_report = checked_hours.groupBy("parameter", "quality_check").agg(
 save_silver_table(quality_report, "air_quality_report")
 read_silver_table("air_quality_report").orderBy("parameter", "quality_check").show(truncate=False)
 
-#Cell 4: Clean, enrich and save
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#Clean, enrich and save
 
 # Step 1: keep only the good rows.
 clean_hours = checked_hours.filter(F.col("quality_check") == "ok")
@@ -151,7 +177,16 @@ locations = spark.table(BRONZE_LOCATIONS_TABLE).select(
 locations = locations.join(clean_hours.select("location_id").distinct(), "location_id", "left_semi")
 save_silver_table(locations, "air_locations")
 
-#Cell 5: Check the result
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+#checking to result
 hours = read_silver_table("air_hourly")
 locations = read_silver_table("air_locations")
 

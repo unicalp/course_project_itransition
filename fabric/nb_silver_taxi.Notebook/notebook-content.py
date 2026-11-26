@@ -22,12 +22,6 @@
 
 # CELL ********************
 
-
-import os
-print(os.listdir("/lakehouse/default/Files"))
-print(os.listdir("/lakehouse/default/Files/raw/nyc_taxi"))
-
-
 import glob
 from pyspark.sql import functions as F
 

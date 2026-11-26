@@ -1,461 +1,249 @@
-# NYC Mobility, Air Quality and Economy on Microsoft Fabric
+# NYC taxi, air quality and economy data on Microsoft Fabric
 
-A small analytics platform that brings three public data sets together in one place:
+This is my course project for the Data Engineer track. I load three public data sets into Microsoft Fabric, clean them, build a small star schema on top and draw some charts from it.
 
-- **Mobility:** NYC yellow taxi trips (TLC)
-- **Environment:** hourly PM2.5 and NO2 measurements (OpenAQ)
-- **Economy:** US GDP per year (World Bank) and the daily USD/EUR rate (ECB)
+- Taxi: NYC yellow taxi trips (TLC), June to August 2026
+- Air quality: hourly PM2.5 and NO2 from OpenAQ, same three months
+- Economy: US GDP per year (World Bank) and the daily USD/EUR rate (ECB)
 
-The data flows through a medallion architecture (**Bronze → Silver → Gold**) and ends in a star schema and four pages of charts. One pipeline runs the whole flow.
+The data goes through three layers: Bronze (raw), Silver (clean), Gold (ready for reports). One pipeline runs everything.
 
-**Period covered:** 1 June 2026 to 31 August 2026 (taxi and air quality). Exchange rates start on 2 January 2026. GDP covers 1960 to 2025.
+## What is done and what is not
 
----
+Done:
 
-## 1. Status
+- Ingestion of all four sources into Bronze
+- Cleaning in PySpark notebooks into Silver, with a quality report per source
+- Star schema in a Fabric Warehouse (Gold)
+- Four pages of charts from the Gold layer
+- One pipeline that runs the whole flow
+- All Fabric items are in this repository (folder `fabric/`)
 
-| Requirement from the task | Status | Where |
-|---|---|---|
-| Phase 1: ingest all sources into Bronze | Done | `pl_ingest_taxi`, `df_worldbank_gdp`, `df_ecb_fx`, `nb_bronze_openaq` |
-| Phase 2: clean and standardize into Silver (PySpark) | Done | `nb_silver_taxi`, `nb_silver_air_quality`, `nb_silver_economy` |
-| Phase 3: star schema in a Fabric Warehouse | Done | `wh_gold`, procedure `dbo.load_gold` |
-| Phase 4: visualizations (four dashboards) | Done as notebook charts | `nb_gold_dashboards` |
-| Phase 5: automated refresh | Done | `pl_daily_refreshing` |
-| Phase 5: Purview lineage, row-level security | Not done (optional in the task) | see section 10 |
-| All code under source control | Done | folder `fabric/` in this repository |
-| Extendability | Described | section 8 |
-| Extra integrations (weather + Grafana, Great Expectations + bot) | Not done | section 10 |
+Not done:
 
----
+- Power BI report (the charts are notebook output)
+- Purview lineage and row-level security (both optional in the task)
+- The two extra integrations (weather with Grafana, Great Expectations with a bot)
 
-## 2. Architecture
+## How the data flows
 
 ```mermaid
 flowchart LR
-    subgraph Sources
-        A1["TLC taxi files<br/>Parquet, monthly"]
-        A2["OpenAQ API<br/>JSON, hourly"]
-        A3["World Bank API<br/>JSON, yearly"]
-        A4["ECB API<br/>CSV, daily"]
-    end
-
-    subgraph Bronze ["Bronze: lh_bronze"]
-        B1["Files/raw/nyc_taxi"]
-        B2["openaq raw tables"]
-        B3[worldbank_gdp_raw]
-        B4[ecb_fx_raw]
-    end
-
-    subgraph Silver ["Silver: lh_silver"]
-        S1["taxi_trips<br/>taxi_zones"]
-        S2["air_hourly<br/>air_locations"]
-        S3["gdp_yearly<br/>fx_daily<br/>calendar"]
-    end
-
-    subgraph Gold ["Gold: wh_gold"]
-        G1[FactTaxiDaily]
-        G2[FactAirQualityDaily]
-        G3["DimDate, DimZone, DimFX,<br/>DimGDP, DimAirLocation"]
-        G4[vw_DailyCityOverview]
-    end
-
-    A1 -->|pl_ingest_taxi| B1
-    A2 -->|nb_bronze_openaq| B2
-    A3 -->|df_worldbank_gdp| B3
-    A4 -->|df_ecb_fx| B4
-
-    B1 -->|nb_silver_taxi| S1
-    B2 -->|nb_silver_air_quality| S2
-    B3 -->|nb_silver_economy| S3
-    B4 -->|nb_silver_economy| S3
-
-    S1 -->|dbo.load_gold| G1
-    S2 -->|dbo.load_gold| G2
-    S3 -->|dbo.load_gold| G3
-    G1 --> G4
-    G2 --> G4
-    G3 --> G4
-    G4 -->|nb_gold_dashboards| D["Four pages of charts"]
+    T["TLC taxi files"] -->|pl_ingest_taxi| B["Bronze<br/>lh_bronze"]
+    O["OpenAQ API"] -->|nb_bronze_openaq| B
+    W["World Bank API"] -->|df_worldbank_gdp| B
+    E["ECB API"] -->|df_ecb_fx| B
+    B -->|nb_silver_taxi<br/>nb_silver_air_quality<br/>nb_silver_economy| S["Silver<br/>lh_silver"]
+    S -->|dbo.load_gold| G["Gold<br/>wh_gold"]
+    G -->|nb_gold_dashboards| C["Charts"]
 ```
 
-What each layer means in this project:
-
-| Layer | Rule | Example |
+| Item | Type | Job |
 |---|---|---|
-| **Bronze** | A copy of the source, not changed. Files stay files; API answers are also saved as raw JSON. | Taxi Parquet files as they were downloaded |
-| **Silver** | Clean, typed, one meaning per column. Bad rows are marked and counted, then removed. | `taxi_trips` with only valid trips |
-| **Gold** | Aggregated and shaped for reporting: facts (numbers) and dimensions (descriptions). | `FactTaxiDaily`: one row per day and zone |
+| `lh_bronze`, `lh_silver` | Lakehouse | Raw data and clean data |
+| `wh_gold` | Warehouse | Star schema, load procedure, one view |
+| `pl_ingest_taxi` | Pipeline | Downloads the monthly taxi files and the zone list |
+| `df_worldbank_gdp`, `df_ecb_fx` | Dataflow Gen2 | Load GDP and the FX rate |
+| `nb_bronze_openaq` | Notebook | Downloads air quality data from the API |
+| `nb_silver_taxi`, `nb_silver_air_quality`, `nb_silver_economy` | Notebook | Bronze to Silver, one notebook per source |
+| `nb_gold_dashboards` | Notebook | Reads Gold and draws the charts |
+| `pl_daily_refreshing` | Pipeline | Runs all of the above in order |
 
----
+## Bronze
 
-## 3. Fabric items
+Bronze is a copy of the source. I do not change anything here.
 
-| Item | Type | What it does |
-|---|---|---|
-| `lh_bronze` | Lakehouse | Raw data (files and `*_raw` tables) |
-| `lh_silver` | Lakehouse | Clean tables |
-| `wh_gold` | Warehouse | Star schema, the load procedure and the view |
-| `pl_ingest_taxi` | Pipeline | Downloads the monthly taxi files and the zone lookup |
-| `df_worldbank_gdp` | Dataflow Gen2 | Loads GDP per year |
-| `df_ecb_fx` | Dataflow Gen2 | Loads the daily USD/EUR rate |
-| `nb_bronze_openaq` | Notebook | Downloads air quality data from the OpenAQ API |
-| `nb_silver_taxi` | Notebook | Bronze → Silver for taxi |
-| `nb_silver_air_quality` | Notebook | Bronze → Silver for air quality |
-| `nb_silver_economy` | Notebook | Bronze → Silver for GDP and FX, and builds the calendar |
-| `nb_gold_dashboards` | Notebook | Reads Gold and draws the four chart pages |
-| `pl_daily_refreshing` | Pipeline | Runs everything in the right order |
+- **Taxi.** A pipeline with a Copy activity inside a ForEach loop. The loop runs over a parameter `months`, for example `["2026-06","2026-07","2026-08"]`. Files land in `Files/raw/nyc_taxi/year=YYYY/month=MM/`. If I run it again, the same file is overwritten, so nothing is duplicated.
+- **GDP and FX.** Two Dataflows Gen2. Each one calls one URL and writes one table.
+- **Air quality.** A notebook. The task suggests Dataflow Gen2 for APIs, but OpenAQ did not fit: it needs a secret key in a header, the answer comes in pages of at most 1,000 rows, every sensor needs its own requests (51 sensors), and the free plan allows 60 requests per minute. In a notebook this is a few lines, and the key stays in a file in the Lakehouse, not in the code.
 
-Naming rules: `lh_` lakehouse, `wh_` warehouse, `pl_` pipeline, `df_` dataflow, `nb_` notebook. Bronze tables end with `_raw`. Gold tables start with `Fact` or `Dim`.
+Stations are selected with a rectangle around New York City. I only download PM2.5 and NO2 sensors that were active in the three months.
 
----
+What landed: 3 taxi files with 10,704,073 trips, 83,376 hourly air quality values, 66 GDP rows and one FX row per business day.
 
-## 4. Bronze: ingestion
+## Silver
 
-| Source | Tool | Why this tool | Lands in |
-|---|---|---|---|
-| TLC taxi trips | Pipeline with a Copy activity inside a ForEach loop | Files are copied as they are; no transformation is needed | `Files/raw/nyc_taxi/year=YYYY/month=MM/` |
-| World Bank GDP | Dataflow Gen2 | One URL, no secret, small result | table `worldbank_gdp_raw` |
-| ECB FX rate | Dataflow Gen2 | One URL, no secret, small result | table `ecb_fx_raw` |
-| OpenAQ air quality | Notebook | See below | raw JSON in `Files/raw/openaq/` and tables `openaq_*_raw` |
+The three Silver notebooks have the same structure: settings, two helper functions, quality check, clean and save, check the result.
 
-**Why OpenAQ uses a notebook and not a Dataflow.** The task suggests Dataflow Gen2 for APIs. For OpenAQ this was not a good fit, for four reasons: the API needs a secret key in a request header, the answers come in pages (at most 1,000 rows per page), each of the 51 sensors needs its own requests, and the free plan allows only 60 requests per minute. A notebook handles all four in a few lines and keeps the key out of the code.
+I do not delete bad rows silently. Every row first gets a mark, `ok` or the reason. The marks are counted and saved as a small report table. After that the bad rows are removed.
 
-Details that matter:
+### Taxi
 
-- **Taxi months are a parameter.** `pl_ingest_taxi` has a parameter `months` (for example `["2026-06","2026-07","2026-08"]`). The ForEach loop builds the file name and the target folder from each value.
-- **Folders use the pattern `year=YYYY/month=MM`.** Running the pipeline again overwrites the same file, so there are no duplicates.
-- **Air quality area.** Stations are selected with a bounding box around New York City. Only PM2.5 and NO2 sensors that were active in the period are downloaded.
-- **Bronze row counts:** 3 taxi files (10,704,073 trips), 83,376 hourly air quality rows from 51 sensors, 66 GDP rows, one FX row per business day.
+A row is bad if the pickup or dropoff time is missing, the pickup is not in the month of the file, the trip takes 0 minutes or more than 6 hours, the distance is 0 or more than 100 miles, or the total amount is 0 or negative. The limits (6 hours, 100 miles) are my decision.
 
----
+| Month | Raw rows | Clean rows | Share |
+|---|---:|---:|---:|
+| 2026-06 | 3,837,248 | 3,646,477 | 95.0% |
+| 2026-07 | 3,530,109 | 3,346,361 | 94.8% |
+| 2026-08 | 3,336,716 | 3,163,711 | 94.8% |
+| Total | 10,704,073 | 10,156,549 | 94.9% |
 
-## 5. Silver: cleaning and standardizing
+Most removed rows have a distance of 0 or above 100 miles (about 3.5% of all rows). I found no exact duplicates. Every pickup zone id exists in the zone table.
 
-Every Silver notebook has the same five steps: **Settings → Helper functions → Standardize and check quality → Clean and save → Check the result**.
+### Air quality
 
-Bad rows are never deleted silently. Each row first gets a mark (`ok` or the reason it is bad). The marks are counted and saved in a report table. Only then the bad rows are removed.
+- NO2 comes in ppm. I convert it to ppb (times 1,000). PM2.5 stays in µg/m³.
+- Times are converted to New York local time, so taxi and air quality use the same day.
+- A row is bad if the value is missing, negative or above 1,000, or if the hour has less than half of its expected readings.
+- A sensor is removed completely if it has good data for less than half of the 2,208 hours. Some sensors had only a few hours.
 
-### 5.1 Taxi (`nb_silver_taxi`)
+PM2.5: 69,256 of 74,835 rows kept (92.5%), from 34 sensors. NO2: all 8,541 rows kept, from 4 sensors. In the end 36 of 75 stations have usable data.
 
-| Rule | A row is bad when |
-|---|---|
-| `missing_time` | pickup or dropoff time is empty |
-| `pickup_outside_month` | the pickup is not in the month of the file |
-| `bad_duration` | the trip takes 0 minutes or less, or more than 360 minutes |
-| `bad_distance` | the distance is 0 or less, or more than 100 miles |
-| `bad_amount` | the total amount is 0 or less |
+### Economy
 
-Result (saved in `taxi_quality_report`):
+- The ECB has no rate on weekends and holidays, but taxis also drive on those days. I fill those days with the last known rate and mark them with `is_filled`.
+- The notebook also creates a calendar table with one row per day of 2026. It is used for filling the FX gaps and becomes `DimDate` in Gold.
+- GDP: one row per year. Years without a value are dropped.
 
-| Month | Raw rows | Clean rows | Clean share | bad_distance | bad_duration | bad_amount | outside month |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 2026-06 | 3,837,248 | 3,646,477 | 95.0% | 126,704 | 51,135 | 12,915 | 17 |
-| 2026-07 | 3,530,109 | 3,346,361 | 94.8% | 126,845 | 43,500 | 13,357 | 46 |
-| 2026-08 | 3,336,716 | 3,163,711 | 94.8% | 115,825 | 44,139 | 13,026 | 15 |
-| **Total** | **10,704,073** | **10,156,549** | **94.9%** | | | | |
+## Gold
 
-No exact duplicate rows were found. All pickup zone ids exist in the zone table (265 zones).
-
-### 5.2 Air quality (`nb_silver_air_quality`)
-
-- **Units are normalized.** NO2 arrives in ppm and is converted to ppb (× 1,000). PM2.5 stays in µg/m³.
-- **Times are converted to New York local time,** so that air quality and taxi data use the same calendar day.
-
-| Rule | A row is bad when |
-|---|---|
-| `missing_time`, `missing_value` | the time or the value is empty |
-| `negative_value` | the value is below 0 |
-| `value_too_high` | PM2.5 above 1,000 µg/m³ or NO2 above 1,000 ppb |
-| `low_coverage` | the hour has less than 50% of its expected readings |
-| `sparse_sensor` | the sensor has good data for less than half of the 2,208 hours in the period |
-
-Result (saved in `air_quality_report`):
-
-| Pollutant | Raw rows | Clean rows | Sensors kept | Removed |
-|---|---:|---:|---:|---|
-| PM2.5 | 74,835 | 69,256 (92.5%) | 34 | 4,295 sparse sensor (9 sensors), 660 negative, 624 low coverage |
-| NO2 | 8,541 | 8,541 (100%) | 4 | none |
-
-36 of the 75 stations in the area have usable data.
-
-### 5.3 Economy and calendar (`nb_silver_economy`)
-
-- **Calendar:** one row per day of 2026 with year, month, day name and a weekend flag. It is generated in the notebook, not ingested.
-- **FX rate:** the ECB publishes no rate on weekends and holidays. Those days get the last known rate and are marked with `is_filled = true`. Every calendar day between the first and the last published rate has a rate.
-- **GDP:** one row per year; years without a value are dropped.
-
----
-
-## 6. Gold: star schema
-
-The stored procedure `dbo.load_gold` reads the Silver tables (`lh_silver.dbo.<table>`) and rebuilds all Gold tables. Running it again gives the same result.
-
-```mermaid
-erDiagram
-    DimDate ||--o{ FactTaxiDaily : date_key
-    DimZone ||--o{ FactTaxiDaily : zone_key
-    DimDate ||--o{ FactAirQualityDaily : date_key
-    DimAirLocation ||--o{ FactAirQualityDaily : location_key
-    DimDate ||--o| DimFX : date_key
-    DimGDP ||--o{ DimDate : calendar_year
-```
+The procedure `dbo.load_gold` reads the Silver tables and rebuilds all Gold tables. I can run it as often as I want; the result is the same.
 
 | Table | One row is | Rows |
 |---|---|---:|
 | `FactTaxiDaily` | one day and one pickup zone | 21,836 |
-| `FactAirQualityDaily` | one day, one station and one pollutant | 3,227 |
+| `FactAirQualityDaily` | one day, one station, one pollutant | 3,227 |
 | `DimDate` | one day | 365 |
 | `DimZone` | one taxi zone | 265 |
-| `DimFX` | one day with its exchange rate | 323 (grows every day) |
+| `DimFX` | one day with its rate | 323 and growing |
 | `DimGDP` | one year | 66 |
-| `DimAirLocation` | one air quality station | 36 |
+| `DimAirLocation` | one station | 36 |
 
-Design decisions:
+The facts join to `DimDate` with `date_key` (a number like 20260601). `FactTaxiDaily` joins to `DimZone` with `zone_key`, `FactAirQualityDaily` joins to `DimAirLocation` with `location_key`.
 
-- **The taxi fact stores totals, not averages.** Averages cannot be added up. A report calculates them from the totals, for example average fare = `fare_usd / trip_count`.
-- **Revenue in euros uses the rate of the same day.**
-- **An air quality day counts only if at least 18 of its 24 hours were measured.**
-- **`DimAirLocation` is an addition** to the dimension list in the task. The air quality dashboard needs station names and coordinates.
-- **`vw_DailyCityOverview`** puts the daily taxi totals, the city averages of PM2.5 and NO2, and the exchange rate in one row per day. It answers the first analytical question of the task directly.
+Some decisions:
 
-Check: the sum of `trip_count` in `FactTaxiDaily` is 10,156,549, the same as the number of clean trips in Silver.
+- The taxi fact has totals, not averages. Averages cannot be summed. The average fare is `fare_usd / trip_count`.
+- Revenue in euros is calculated with the rate of the same day.
+- A station day is kept only if at least 18 of 24 hours were measured.
+- `DimAirLocation` is not in the task list. I added it because the charts need station names.
+- The view `vw_DailyCityOverview` has one row per day with trips, revenue, PM2.5, NO2 and the rate. Most charts read from it.
 
----
+To check Gold against Silver I sum `trip_count` in `FactTaxiDaily`. It must be 10,156,549, the number of clean trips.
 
-## 7. Orchestration
+## Pipeline
 
-`pl_daily_refreshing` runs eight activities in one chain. Each activity starts only if the one before it succeeded.
+`pl_daily_refreshing` has eight activities in one line. An activity starts only if the one before succeeded.
 
-| # | Activity | Runs | Time in the test run |
-|---|---|---|---:|
-| 1 | `run_ingest_taxi` | pipeline `pl_ingest_taxi` | 1 min 8 s |
-| 2 | `run_df_worldbank_gdp` | dataflow | 41 s |
-| 3 | `run_df_ecb_fx` | dataflow | 33 s |
-| 4 | `run_bronze_openaq` | notebook | 6 min 41 s |
-| 5 | `run_silver_taxi` | notebook | 1 min 7 s |
-| 6 | `run_air_quality` | notebook | 1 min 37 s |
-| 7 | `run_silver_economy` | notebook | 50 s |
-| 8 | `run_gold_load` | stored procedure `dbo.load_gold` | 10 s |
+| Step | Runs | Time |
+|---|---|---:|
+| `run_ingest_taxi` | `pl_ingest_taxi` | 1 min 8 s |
+| `run_df_worldbank_gdp` | dataflow | 41 s |
+| `run_df_ecb_fx` | dataflow | 33 s |
+| `run_bronze_openaq` | notebook | 6 min 41 s |
+| `run_silver_taxi` | notebook | 1 min 7 s |
+| `run_air_quality` | notebook | 1 min 37 s |
+| `run_silver_economy` | notebook | 50 s |
+| `run_gold_load` | `dbo.load_gold` | 10 s |
 
-**Schedule:** the pipeline is set to run once a day (Run → Schedule).
+About 13 minutes in total. The OpenAQ step is slow because the notebook waits one second before each request.
 
-The full run takes about 13 minutes. The OpenAQ step is the slowest because the notebook waits about one second before every request to respect the API limit.
+I did not use parallel branches. My capacity is small (F2), and I want the order Bronze, Silver, Gold to be fixed. If a step fails, the next ones do not run.
 
-**Why one chain and not parallel branches:** the capacity (F2) is small, and the order Bronze → Silver → Gold must be kept. If one step fails, the steps after it do not run on incomplete data.
+## Charts
 
-**Every step can be run again safely.** Files are overwritten at the same path, tables are replaced, and the Gold procedure drops and rebuilds its tables.
-
----
-
-## 8. Extendability: how to add a new source
-
-Example: adding weather data.
-
-1. **Bronze.** Choose the tool with this rule: one URL without a secret → Dataflow Gen2; files → pipeline with Copy; an API with a key, pages or many calls → notebook. Land the data in `lh_bronze` as `Files/raw/weather/...` or as a table `weather_<content>_raw`.
-2. **Silver.** Copy one of the Silver notebooks as `nb_silver_weather`. Keep the five steps. Change the columns, the units and the quality rules. Save the result with `save_silver_table(...)`.
-3. **Gold.** Add one step to `dbo.load_gold`, for example `FactWeatherDaily` with a `date_key`. Because every fact uses the same `date_key`, the new table joins to `DimDate` and to the other facts without extra work.
-4. **Pipeline.** Add the new activities to `pl_daily_refreshing`: the ingestion after the other Bronze steps, the Silver notebook before `run_gold_load`.
-5. **Documentation.** Add the tables to section 11 of this file.
-
-What makes this easy:
-
-- **One notebook per source.** Sources do not depend on each other; one can fail or change without touching the others.
-- **The same structure everywhere.** Every Silver notebook has the same five steps and the same two helper functions.
-- **No hard-coded IDs.** Notebooks find the Silver lakehouse by its name, so the code also works in another workspace.
-- **New taxi months need no code change.** Add the month to the `months` parameter; `nb_silver_taxi` processes every month it finds in Bronze.
-- **One shared date key** (`date_key`, for example 20260601) connects all facts.
-
----
-
-## 9. Results
-
-The charts are created by `nb_gold_dashboards` from the Gold layer.
-
-### 9.1 Mobility
+Made by `nb_gold_dashboards`.
 
 ![Mobility](docs/images/1_mobility.png)
 
-- Between about 78,000 and 159,000 trips per day, with a clear weekly pattern. The lowest days are around the 4 July holiday and at the end of August.
-- The average fare is about 21 US dollars per trip.
-- Busiest pickup zones: JFK Airport (434,500 trips), Midtown Center (432,200), Upper East Side South (427,700), Upper East Side North (362,500), Penn Station/Madison Sq West (328,700).
-
-### 9.2 Air quality
+Between about 78,000 and 159,000 trips per day, with a weekly pattern. The lowest days are around 4 July and at the end of August. The busiest pickup zone is JFK Airport, then Midtown Center and Upper East Side South. The average fare is around 21 dollars.
 
 ![Air quality](docs/images/2_air_quality.png)
 
-- PM2.5 is below 20 µg/m³ on most days.
-- There is one strong episode in the middle of July: for about four days the city average is between 49 and 87 µg/m³.
-- NO2 moves between about 4 and 28 ppb.
-
-### 9.3 Mobility and air quality
+PM2.5 is below 20 µg/m³ on most days. In the middle of July there are about four days where the city average is between 49 and 87. NO2 is between about 4 and 28 ppb.
 
 ![Mobility and air quality](docs/images/3_mobility_air_quality.png)
 
-- The correlation between trips per day and PM2.5 is **0.15**. This is weak: in these 92 days, days with more taxi trips are not clearly days with worse air.
-- During the PM2.5 episode in July the number of trips stayed at its normal level (114,000 to 128,000 per day).
-- The charts do not use two different scales on one chart. Two scales can be lined up in any way and can show a relation that is not in the data. The two measures are shown below each other with the same dates.
+The correlation between trips per day and PM2.5 is 0.15, which is weak. On the four bad days in July the number of trips was normal (114,000 to 128,000). So in this data I do not see that more taxi traffic means worse air on the same day. It is only 92 days, and the four extreme days have a big effect on the number.
 
-### 9.4 Economic impact
+I did not put trips and PM2.5 on one chart with two y-axes. With two scales you can make any two lines look related. They are below each other with the same dates.
 
-![Economic impact](docs/images/4_economy.png)
+![Economy](docs/images/4_economy.png)
 
-- Taxi revenue is a few million US dollars per day; the lowest day is about 2.3 million.
-- The rate moved between 1.134 and 1.170 US dollars for one euro in the period. The same revenue is worth about 3% more or less in euros depending on the day.
-- US GDP in 2025: 30.8 trillion US dollars.
+Revenue is a few million dollars per day. In the three months the rate moved between 1.134 and 1.170 dollars for one euro, so the same revenue changes by about 3% in euros. US GDP in 2025 is 30.8 trillion dollars.
 
-### 9.5 The analytical questions of the task
+## Adding a new source
 
-| Question | Answer from this data |
-|---|---|
-| How do taxi trips per day relate to PM2.5 and NO2? | Weak relation (correlation with PM2.5: 0.15). See 9.3. |
-| Which zones and times are busiest? | Airports and Midtown / Upper East Side. See 9.1. Busiest hours are not charted yet; `taxi_trips` has the column `pickup_hour` for it. |
-| How does revenue look in USD and in EUR? | See 9.4. The gap between the two lines is the exchange rate of the day. |
-| Long-term growth and environment | GDP per year is in `DimGDP` with the growth to the year before. With three months of taxi and air data, a long-term comparison is not possible yet. |
+Example: weather data.
 
----
+1. Bronze: pick the tool. One URL without a secret: Dataflow Gen2. Files: pipeline with Copy. An API with a key or with pages: notebook. Land it in `lh_bronze`.
+2. Silver: copy one of the Silver notebooks to `nb_silver_weather`, keep the structure, change the columns and the rules.
+3. Gold: add one block to `dbo.load_gold`, for example `FactWeatherDaily` with a `date_key`. It then joins to `DimDate` like the other facts.
+4. Pipeline: add the new activities to `pl_daily_refreshing`.
+5. Add the new tables to the data dictionary below.
 
-## 10. Governance, limits and next steps
+This works because every source has its own notebook, all notebooks have the same structure, the notebooks find the Silver lakehouse by name (no ids in the code), and all facts share `date_key`. For a new taxi month I only add it to the `months` parameter; the Silver notebook processes every month it finds.
 
-### Governance
+## Problems I ran into
 
-| Topic | How it is handled |
-|---|---|
-| **Secrets** | The OpenAQ API key is stored in a file in the Lakehouse (`Files/config/openaq_key.txt`). It is never written in code and is not in this repository. |
-| **Source control** | The workspace is connected to this repository (folder `fabric/`). Pipelines, dataflows, notebooks and the warehouse definition are committed from Fabric. |
-| **Data quality** | Every Silver notebook writes a quality report table and ends with checks. Gold is checked against Silver (trip totals must match). |
-| **Lineage** | The diagram in section 2 shows which item writes which table. The Fabric lineage view shows the same on item level. |
-| **Personal data** | The data sets contain no personal data. Taxi trips have no passenger or driver identity; locations are zones, not addresses. |
-| **Access** | One workspace, one administrator. Recommended for more users: report readers get read access to `wh_gold` only; Bronze and Silver stay with the engineers. |
-| **Cost** | The capacity is paused when it is not needed. The scheduled run needs an active capacity. |
+- My new tenant could not start a Fabric trial. I created an F2 capacity in Azure instead and pause it when I do not work.
+- The taxi copy failed with 403. The URL was missing `.parquet`. I found it in the Input of the failed activity, the error text did not help.
+- The World Bank table had only 50 rows. The API returns 50 rows per page; `per_page=100` fixed it. Since then I compare row counts with the source after every load.
+- The ECB dataflow wrote to a table with the wrong name. The table name is fixed when the destination is created, renaming the query later does not change it.
+- My first Silver run found 0 files, because the notebook was attached to the wrong lakehouse.
+- Writing to another lakehouse with `saveAsTable` was not reliable, so the Silver notebooks write by path.
 
-### Known limits
+## Known limits
 
-- **Fixed period.** The taxi months and the OpenAQ dates are settings, not automatic "last three months". A new period needs a change of the `months` parameter and of two dates in `nb_bronze_openaq`.
-- **The air quality area is a rectangle.** It also covers a part of New Jersey, so a few stations are outside New York City (for example Fort Lee, which is among the stations with the highest PM2.5).
-- **Air quality is on city level only.** Stations are not yet matched to taxi zones, so "zone with much traffic and bad air" cannot be shown.
-- **NO2 comes from only four sensors.**
-- **Negative PM2.5 values are removed.** Some reference monitors report small negative values at very clean air; removing them makes the average slightly higher.
-- **Charts are static** (notebook output). There is no interactive Power BI report yet.
+- The period is fixed. For other months I change the `months` parameter and two dates in `nb_bronze_openaq`.
+- The rectangle around the city also covers a part of New Jersey. A few stations are outside New York City, for example Fort Lee, which is one of the stations with the highest PM2.5.
+- Stations are not matched to taxi zones, so I can compare taxi and air only for the whole city, not per zone.
+- NO2 comes from only four sensors.
+- I remove negative PM2.5 values. Some monitors report small negative values when the air is very clean, so my average is a little too high.
 
-### Next steps
+Next I would match the stations to the taxi zones with the TLC zone shapes. That fixes the New Jersey problem and allows a comparison per zone.
 
-1. Match stations to taxi zones with the TLC zone shapes. This fixes the New Jersey problem and allows analysis per zone.
-2. Make the period a parameter of `pl_daily_refreshing` and pass it to the taxi pipeline and the OpenAQ notebook.
-3. Build a Power BI report on `wh_gold`.
-4. Add a chart of trips per hour.
-5. Optional integrations from the task: weather data with a time-series database and Grafana; Great Expectations checks with a chat bot trigger.
+## Secrets, access, source control
 
----
+- The OpenAQ key is in `Files/config/openaq_key.txt` in the Lakehouse. It is not in the code and not in this repository.
+- The workspace is connected to this repository. I commit from Fabric.
+- The data has no personal data. Trips have no passenger or driver, locations are zones.
+- I am the only user. With more users I would give report readers access to `wh_gold` only.
+- Every Silver notebook writes a quality report and ends with checks. Gold is checked against Silver.
 
-## 11. Data dictionary
+## Data dictionary
 
-### Bronze (`lh_bronze`)
+Bronze (`lh_bronze`)
 
 | Object | Content |
 |---|---|
-| `Files/raw/nyc_taxi/year=YYYY/month=MM/yellow_tripdata_YYYY-MM.parquet` | Taxi trips of one month, as published by TLC |
-| `Files/raw/nyc_taxi/lookup/taxi_zone_lookup.csv` | Taxi zones (id, borough, zone, service zone) |
-| `Files/raw/openaq/locations.json`, `Files/raw/openaq/hours/sensor_<id>.json` | Raw API answers |
-| `openaq_locations_raw` | 75 stations in the area |
-| `openaq_sensors_raw` | 51 PM2.5 and NO2 sensors that were downloaded |
-| `openaq_hours_raw` | 83,376 hourly values |
-| `worldbank_gdp_raw` | GDP per year as returned by the API |
-| `ecb_fx_raw` | Daily reference rate as returned by the API |
+| `Files/raw/nyc_taxi/year=YYYY/month=MM/*.parquet` | Taxi trips of one month, as published |
+| `Files/raw/nyc_taxi/lookup/taxi_zone_lookup.csv` | Taxi zones |
+| `Files/raw/openaq/` | Raw API answers as JSON |
+| `openaq_locations_raw`, `openaq_sensors_raw`, `openaq_hours_raw` | Stations, sensors and hourly values |
+| `worldbank_gdp_raw` | GDP per year |
+| `ecb_fx_raw` | Daily USD/EUR rate |
 
-### Silver (`lh_silver`)
+Silver (`lh_silver`)
 
-**`taxi_trips`**: one row per valid trip (10,156,549 rows)
-
-| Column | Type | Meaning |
-|---|---|---|
-| `source_month` | text | Month of the source file, for example `2026-06` |
-| `vendor_id` | int | Taxi technology provider code |
-| `pickup_datetime`, `dropoff_datetime` | timestamp | Start and end of the trip, New York local time |
-| `pickup_location_id`, `dropoff_location_id` | int | Taxi zone ids |
-| `passenger_count` | int | Number of passengers (can be empty) |
-| `trip_distance_miles` | number | Distance in miles |
-| `payment_type` | int | Payment code |
-| `fare_amount`, `tip_amount`, `total_amount` | number | Amounts in US dollars |
-| `trip_minutes` | number | Trip length in minutes |
-| `pickup_date` | date | Day of the pickup |
-| `pickup_hour` | int | Hour of the pickup (0 to 23) |
-
-**`taxi_zones`**: `location_id`, `borough`, `zone`, `service_zone` (265 rows)
-
-**`taxi_quality_report`**: `source_month`, `quality_check`, `row_count`
-
-**`air_hourly`**: one row per sensor and hour (77,797 rows)
-
-| Column | Type | Meaning |
-|---|---|---|
-| `sensor_id`, `location_id` | whole number | Sensor and its station |
-| `parameter` | text | `pm25` or `no2` |
-| `unit` | text | `µg/m³` for PM2.5, `ppb` for NO2 |
-| `value` | number | Hourly value in that unit |
-| `measured_at_utc` | timestamp | Start of the hour in UTC |
-| `measurement_date`, `measurement_hour` | date, int | Day and hour in New York local time |
-| `percent_coverage` | number | Share of expected readings received in that hour |
-
-**`air_locations`**: `location_id`, `location_name`, `provider`, `is_monitor`, `latitude`, `longitude` (36 rows)
-
-**`air_quality_report`**: `parameter`, `quality_check`, `row_count`, `sensors`
-
-**`calendar`**: `date_key`, `calendar_date`, `year`, `month`, `month_name`, `day`, `day_of_week` (1 = Monday), `day_name`, `is_weekend` (365 rows)
-
-**`fx_daily`**: `rate_date`, `usd_per_eur`, `eur_per_usd`, `is_filled` (true = weekend or holiday, last known rate used)
-
-**`gdp_yearly`**: `country_code`, `year`, `gdp_usd` (66 rows)
-
-### Gold (`wh_gold`)
-
-**`FactTaxiDaily`**
-
-| Column | Meaning |
+| Table | Columns |
 |---|---|
-| `date_key` | Day, as a number like 20260601. Joins to `DimDate` |
-| `zone_key` | Pickup zone. Joins to `DimZone` |
-| `trip_count` | Number of trips |
-| `fare_usd`, `tip_usd`, `revenue_usd` | Sums in US dollars (`revenue_usd` is the total amount) |
-| `revenue_eur` | Revenue in euros, with the rate of that day |
-| `distance_miles`, `trip_minutes` | Sums of distance and time |
+| `taxi_trips` | `source_month`, `vendor_id`, `pickup_datetime`, `dropoff_datetime` (New York local time), `pickup_location_id`, `dropoff_location_id`, `passenger_count`, `trip_distance_miles`, `payment_type`, `fare_amount`, `tip_amount`, `total_amount` (US dollars), `trip_minutes`, `pickup_date`, `pickup_hour` |
+| `taxi_zones` | `location_id`, `borough`, `zone`, `service_zone` |
+| `taxi_quality_report` | `source_month`, `quality_check`, `row_count` |
+| `air_hourly` | `sensor_id`, `location_id`, `parameter` (pm25 or no2), `unit` (µg/m³ or ppb), `value`, `measured_at_utc`, `measurement_date`, `measurement_hour` (New York local time), `percent_coverage` |
+| `air_locations` | `location_id`, `location_name`, `provider`, `is_monitor`, `latitude`, `longitude` |
+| `air_quality_report` | `parameter`, `quality_check`, `row_count`, `sensors` |
+| `calendar` | `date_key`, `calendar_date`, `year`, `month`, `month_name`, `day`, `day_of_week` (1 = Monday), `day_name`, `is_weekend` |
+| `fx_daily` | `rate_date`, `usd_per_eur`, `eur_per_usd`, `is_filled` |
+| `gdp_yearly` | `country_code`, `year`, `gdp_usd` |
 
-**`FactAirQualityDaily`**
+Gold (`wh_gold`)
 
-| Column | Meaning |
+| Table | Columns |
 |---|---|
-| `date_key` | Day. Joins to `DimDate` |
-| `location_key` | Station. Joins to `DimAirLocation` |
-| `parameter`, `unit` | Pollutant and its unit |
-| `avg_value`, `min_value`, `max_value` | Daily average, lowest and highest hourly value |
-| `hours_measured` | Number of hours with data (18 to 24) |
+| `FactTaxiDaily` | `date_key`, `zone_key`, `trip_count`, `fare_usd`, `tip_usd`, `revenue_usd`, `revenue_eur`, `distance_miles`, `trip_minutes` (all sums per day and zone) |
+| `FactAirQualityDaily` | `date_key`, `location_key`, `parameter`, `unit`, `avg_value`, `min_value`, `max_value`, `hours_measured` |
+| `DimDate` | `date_key`, `full_date`, `calendar_year`, `calendar_month`, `month_name`, `day_of_month`, `day_of_week`, `day_name`, `is_weekend` |
+| `DimZone` | `zone_key`, `borough`, `zone_name`, `service_zone` |
+| `DimFX` | `date_key`, `rate_date`, `usd_per_eur`, `eur_per_usd`, `is_filled` |
+| `DimGDP` | `calendar_year`, `country_code`, `gdp_usd`, `gdp_growth_percent` |
+| `DimAirLocation` | `location_key`, `location_name`, `provider`, `is_monitor`, `latitude`, `longitude` |
+| `vw_DailyCityOverview` | `date_key`, `full_date`, `day_name`, `is_weekend`, `trip_count`, `revenue_usd`, `revenue_eur`, `avg_fare_usd`, `avg_trip_minutes`, `avg_pm25`, `avg_no2_ppb`, `pm25_stations`, `no2_stations`, `usd_per_eur` |
 
-**`DimDate`**: `date_key`, `full_date`, `calendar_year`, `calendar_month`, `month_name`, `day_of_month`, `day_of_week`, `day_name`, `is_weekend`
+## How to run
 
-**`DimZone`**: `zone_key`, `borough`, `zone_name`, `service_zone`
-
-**`DimFX`**: `date_key`, `rate_date`, `usd_per_eur`, `eur_per_usd`, `is_filled`
-
-**`DimGDP`**: `calendar_year`, `country_code`, `gdp_usd`, `gdp_growth_percent`
-
-**`DimAirLocation`**: `location_key`, `location_name`, `provider`, `is_monitor`, `latitude`, `longitude`
-
-**`vw_DailyCityOverview`**: one row per day: `date_key`, `full_date`, `day_name`, `is_weekend`, `trip_count`, `revenue_usd`, `revenue_eur`, `avg_fare_usd`, `avg_trip_minutes`, `avg_pm25`, `avg_no2_ppb`, `pm25_stations`, `no2_stations`, `usd_per_eur`
-
----
-
-## 12. How to run
-
-1. Connect a Fabric workspace to this repository (Git folder `fabric`) and update the workspace from Git.
-2. Get a free OpenAQ API key and save it as a text file in `lh_bronze` at `Files/config/openaq_key.txt`.
-3. Run the pipeline `pl_daily_refreshing`. It takes about 13 minutes.
-4. Open `nb_gold_dashboards` and run all cells to see the charts.
-
-To load other months, change the `months` parameter of `pl_ingest_taxi` and the two dates in the first cell of `nb_bronze_openaq`.
-
-## 13. Repository layout
-
-```
-README.md            this file
-docs/images/         the four chart pages
-fabric/              all Fabric items, synchronized by the Fabric Git integration
-```
+1. Connect a Fabric workspace to this repository (Git folder `fabric`) and update from Git.
+2. Get a free OpenAQ API key and save it in `lh_bronze` as `Files/config/openaq_key.txt`.
+3. Run `pl_daily_refreshing` (about 13 minutes).
+4. Open `nb_gold_dashboards` and run all cells.
